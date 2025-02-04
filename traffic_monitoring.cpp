@@ -4,6 +4,9 @@
 #include <vector>
 #include <memory>
 #include <boost/intrusive/list.hpp>
+#include <thread>
+#include <chrono>
+#include <atomic>
 
 // Represent states for the Crossroad traffic Monitoring
 enum class State {   //data types represents using enum
@@ -56,18 +59,20 @@ struct VehicleNode : public boost::intrusive::list_base_hook<> {
 // Class for Crossroad Traffic Monitoring 
 class CrossroadTrafficMonitoring {
 public:
-    explicit CrossroadTrafficMonitoring(int period)
-        : state(State::Init), period(period), errorCount(0) {}
+    explicit CrossroadTrafficMonitoring(int period)   //Setup the Timer
+        : state(State::Init), period(std::chrono::seconds(period)), errorCount(0), resetThreadRunning(false) {}
 
     void Start() {
         if (state == State::Init) {
             state = State::Active;
+            StartResetThread();
         }
     }
 
     void Stop() {
         if (state == State::Active) {
             state = State::Stopped;
+            StopResetThread();
         }
     }
 
@@ -76,6 +81,7 @@ public:
         errorCount = 0;
         vehicleList.clear_and_dispose([](VehicleNode* node) { delete node; });
         vehicleMap.clear();
+        std::cout << "System reset to Active state.\n";
     }
 
     void OnSignal() {
@@ -88,39 +94,39 @@ public:
     }
 
     void OnSignal(const Vehicle& vehicle) {
-    // Check if the traffic system is in Active state
-    if (state != State::Active) {
-        std::cout << "Traffic System is not Active\n";
-        return;
+        // Check if the traffic system is in Active state
+        if (state != State::Active) {
+            std::cout << "Traffic System is not Active\n";
+            return;
+        }
+
+        // Generate the unique key for the vehicle
+        const std::string key = vehicle.id + "-" + vehicle.getType();
+
+        // Check if the vehicle already exists in the map
+        auto it = vehicleMap.find(key);
+        if (it != vehicleMap.end()) {
+            // Vehicle already exists, increment its count
+            it->second->count++;
+            std::cout << "Vehicle " << vehicle.id << " (" << vehicle.getType() 
+                      << ") count incremented to " << it->second->count << ".\n";
+        } else {
+            // Vehicle does not exist, create a new node and add it in the system
+            std::cout << "Vehicle " << vehicle.id << " (" << vehicle.getType() 
+                      << ") is added new for the system..\n";
+
+            // Create a new VehicleNode
+            auto node = std::make_unique<VehicleNode>(vehicle.id, vehicle.getType());
+            
+            // Add the node to the Vehicle list
+            vehicleList.push_back(*node);
+            
+            // Update the map with the new node
+            vehicleMap[key] = node.get();
+
+            node.release();
+        }
     }
-
-    // Generate the unique key for the vehicle
-    const std::string key = vehicle.id + "-" + vehicle.getType();
-
-    // Check if the vehicle already exists in the map
-    auto it = vehicleMap.find(key);
-    if (it != vehicleMap.end()) {
-        // Vehicle already exists, increment its count
-        it->second->count++;
-        std::cout << "Vehicle " << vehicle.id << " (" << vehicle.getType() 
-                  << ") count incremented to " << it->second->count << ".\n";
-    } else {
-        // Vehicle does not exist, create a new node and add it in the system
-        std::cout << "Vehicle " << vehicle.id << " (" << vehicle.getType() 
-                  << ") is added new for the system..\n";
-
-        // Create a new VehicleNode
-        auto node = std::make_unique<VehicleNode>(vehicle.id, vehicle.getType());
-        
-        // Add the node to the Vehicle list
-        vehicleList.push_back(*node);
-        
-        // Update the map with the new node
-        vehicleMap[key] = node.get();
-
-        node.release();
-    }
-}
     
     int GetErrorCount() const {
         return errorCount;
@@ -134,15 +140,37 @@ public:
     }
 
     ~CrossroadTrafficMonitoring() {    // Destructor
+        StopResetThread();
         vehicleList.clear_and_dispose([](VehicleNode* node) { delete node; });
     }
 
 private:
     State state;
-    int period;
+    std::chrono::seconds period;
     int errorCount;
     boost::intrusive::list<VehicleNode> vehicleList;
     std::unordered_map<std::string, VehicleNode*> vehicleMap;
+    std::thread resetThread;
+    std::atomic<bool> resetThreadRunning;
+
+    void StartResetThread() {
+        resetThreadRunning = true;
+        resetThread = std::thread([this]() {
+            while (resetThreadRunning) {
+                std::this_thread::sleep_for(period);
+                if (resetThreadRunning) {
+                    Reset();
+                }
+            }
+        });
+    }
+
+    void StopResetThread() {
+        resetThreadRunning = false;
+        if (resetThread.joinable()) {
+            resetThread.join();
+        }
+    }
 };
 
 int main() {
@@ -173,5 +201,6 @@ int main() {
         std::cout << "No errors\n";
     }
 
+    traffic_monitoring.Stop();
     return 0;
 }
